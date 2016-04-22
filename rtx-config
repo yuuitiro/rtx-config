@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+
+function abort {
+	echo "$@ " 1>&2
+	exit 1
+}
+
+function usage {
+
+    cat  << EOF
+Usage: `basename $0` -H hostname -p password -f target_file -v [verbose] -d
+Config get set utility for YAMAHA RTX Router 
+
+ common)
+   -v verbose
+
+ get)
+   Target Single host.
+   -H  [require] Target host name or IP address. 
+   -p  [require] administrator password (not login passowrd)
+
+   * save to stdout. 
+
+   Target Mulitple host.
+   -f  [require] Sepalate by Conma file. 
+         Hostname,Administrator Password
+   -o  [optional] output directory
+   
+   * save to file (Hostname)
+
+ diff)
+   Unified diff between file and target router.
+
+   -d  [require] Use diff
+   -H  [require] Target host name or IP address. 
+   -p  [require] administrator password (not login passowrd)
+   -f  [require] Target file
+
+ save)
+   Save configuration from file. 
+   ** WARRNING **
+
+   - file doesn't  validation 
+   - If Change IP address, Can't access router after setting.
+   - always clear configuration
+
+   -s  [require] Use Save from file
+   -H  [require] Target host name or IP address. 
+   -p  [require] administrator password (not login passowrd)
+   -f  [require] Target file
+
+Reports bug to <yuuitiro@vcnet.toyama.toyama.jp> 
+Require curl and bash
+EOF
+	1>&2
+	
+}
+
+function delete_temp {
+	[ -f ${temp_header} ] && rm -f ${temp_header}
+	[ -f ${temp_format} ] && rm -f ${temp_format}
+	[ -f ${temp} ] && rm -f ${temp}
+}
+
+function getconfig {
+	local _ipaddr=$1
+	local _pass=$2
+	local _file=$3
+	local _dir=$4
+
+	local temp=`mktemp`
+	local temp_format=`mktemp`
+	local temp_header=`mktemp`
+
+	if [ ${_dir} ]; then
+		_file=${_dir}/${_file}
+	fi
+	
+	curl -s tftp://${_ipaddr}/config/${_pass}  > ${temp} || abort "${_ipaddr} Get config error."
+	
+	head -2 ${temp} | tr -d \\r > ${temp_header}
+	cat ${temp} | tr -d \\r | grep -v ^# | grep -v '^$' | uniq > ${temp_format}
+
+	if [ ${_file} ]; then
+		cat ${temp_header} ${temp_format} > ${_file}
+	else
+		cat ${temp_header} ${temp_format}
+	fi
+
+	delete_temp
+}
+
+function saveconfig {
+	local _ipaddr=$1
+	local _pass=$2
+	local _file=$3
+	
+	cat ${_file} | awk 'BEGIN { print "clear configuration" } {print $0} END { print "save"} ' | curl -s -T - tftp://${_ipaddr}/config/${_pass} || abort "${_ipaddr} save config error."
+	
+}
+
+trap 'delete_temp; [ -f ${temp_diff} ] && rm -f ${temp_diff}; exit 1' 1 2 3 15
+
+if [ $# -eq 0 ]; then
+	usage
+	exit 1
+fi
+
+
+while getopts f:H:p:hvdso: OPT
+do
+	case ${OPT} in
+		"f" )
+			FLAG_F="TRUE";
+			ROUTERLIST_FILE="${OPTARG}"
+			csvfile=${OPTARG}
+			[ -f $csvfile ] || abort "$csvfile, No such file"
+			;;
+		"H" )
+			FLAG_H="TRUE";
+			TARGET_HOST="${OPTARG}"
+			;;
+		"p" )
+			FLAG_P="TRUE";
+			TARGET_HOST_PASSWORD="${OPTARG}"
+			;;
+		"v" )
+			FLAG_V="TRUE";
+			;;
+		"d" )
+			FLAG_D="TRUE";
+			## need -f, -H, -p
+			;;
+		"s" )
+			FLAG_S="TRUE";
+			## need -f, -H, -p
+			;;
+		"o" )
+			FLAGS_O="TRUE";
+			SAVE_DIR="${OPTARG}"
+			;;
+		"h" )
+			usage
+			exit 1
+			;;
+	esac
+done
+
+if [ ${FLAG_D} ] && [ ${FLAG_F} ] && [ ${FLAG_H} ] && [ ${FLAG_P} ]; then
+
+	temp_diff=`mktemp`
+
+	getconfig ${TARGET_HOST} ${TARGET_HOST_PASSWORD} ${temp_diff}
+	
+	[ -f ${temp_diff} ] && diff -u $temp_diff ${csvfile}
+	rm -f ${temp_diff}
+	
+	exit 0;
+fi
+
+if [ ${FLAG_S} ] && [ ${FLAG_F} ] && [ ${FLAG_H} ] && [ ${FLAG_P} ]; then
+
+	saveconfig ${TARGET_HOST} ${TARGET_HOST_PASSWORD} ${csvfile}
+	
+	exit 0;
+fi
+
+
+if [ ${FLAG_F} ]; then
+
+	for line in `cat ${csvfile} | grep -v ^#`
+	do
+		ipaddr=`echo ${line} | cut -d ',' -f 1`
+		pass=`echo ${line} | cut -d ',' -f 2`
+
+		getconfig ${ipaddr} ${pass} ${ipaddr} ${SAVE_DIR}
+		[ ${FLAG_V} ] && echo ${ipaddr} done.
+	done
+	exit 0;
+fi
+
+if [ ${FLAG_H} ] && [ ${FLAG_P} ] ; then
+	getconfig ${TARGET_HOST} ${TARGET_HOST_PASSWORD}
+	[ ${FLAG_V} ] && echo ${TARGET_HOST} done.
+	exit 0;
+fi
+
+usage
+exit 0;
